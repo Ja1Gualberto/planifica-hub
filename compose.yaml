@@ -1,0 +1,55 @@
+services:
+  app:
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      CI_ENVIRONMENT: development
+      app.baseURL: http://localhost:8080/
+      database.default.hostname: banco
+      database.default.database: ${DOCKER_BANCO_NOME:?Defina DOCKER_BANCO_NOME no .env}
+      database.default.username: ${DOCKER_BANCO_USUARIO:?Defina DOCKER_BANCO_USUARIO no .env}
+      database.default.password: ${DOCKER_BANCO_SENHA:?Defina DOCKER_BANCO_SENHA no .env}
+      database.default.DBDriver: MySQLi
+      database.default.port: "3306"
+    volumes:
+      - type: bind
+        source: .
+        target: /var/www/html
+      - type: bind
+        source: ./.env
+        target: /var/www/html/.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - dependencias:/var/www/html/vendor
+      - escrita:/var/www/html/writable
+      - relatorios:/var/www/html/build
+    depends_on:
+      banco:
+        condition: service_healthy
+
+  banco:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DOCKER_BANCO_NOME:?Defina DOCKER_BANCO_NOME no .env}
+      MYSQL_USER: ${DOCKER_BANCO_USUARIO:?Defina DOCKER_BANCO_USUARIO no .env}
+      MYSQL_PASSWORD: ${DOCKER_BANCO_SENHA:?Defina DOCKER_BANCO_SENHA no .env}
+      MYSQL_ROOT_PASSWORD: ${DOCKER_BANCO_SENHA_ROOT:?Defina DOCKER_BANCO_SENHA_ROOT no .env}
+    volumes:
+      - dados_mysql:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP --host=127.0.0.1 --user="$${MYSQL_USER}" --database="$${MYSQL_DATABASE}" --execute="SELECT 1" > /dev/null 2>&1'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  dependencias:
+  escrita:
+  relatorios:
+  dados_mysql:

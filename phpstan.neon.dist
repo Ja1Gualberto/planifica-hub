@@ -16,6 +16,7 @@ parameters:
     paths:
         - app
         - tests
+        - docker/php
     excludePaths:
         - app/Views/*
         - app/ThirdParty/*
