@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+diretorioProjeto="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+falhar() {
+    printf 'Erro: %s\n' "$1" >&2
+    exit 1
+}
+
+mostrarAjuda() {
+    cat <<'AJUDA'
+Uso: ./planifica <comando> [argumentos]
+
+Ambiente exclusivo para desenvolvimento local (Bash + Docker Compose v2).
+
+  dev        Constrói e sobe aplicação, banco e phpMyAdmin em background
+  stop       Para os containers
+  down       Para e remove os containers, preservando todos os volumes
+  restart    Reinicia [serviço]: app (padrão), banco ou phpmyadmin
+  build      Reconstrói a imagem de desenvolvimento da aplicação
+  status     Mostra o status dos containers
+  logs       Acompanha logs: [serviço] [opções do compose logs]; padrão: app
+  phpmyadmin Sobe o phpMyAdmin e seu banco; mostra o endereço de acesso local
+  spark      Executa php spark <args> (CLI do CodeIgniter)
+  composer   Executa composer <args> no container
+  php        Executa php <args> no container
+  phpcs      Verifica o padrão PSR-12
+  phpcbf     Corrige automaticamente o estilo (pode alterar arquivos PHP)
+  phpstan    Executa vendor/bin/phpstan analyse <args>
+  test       Executa PHPUnit com cobertura; aceita argumentos do PHPUnit
+  check      Corrige o estilo, verifica PSR-12 e executa PHPStan
+  setup      Instala as dependências Composer; exige aplicação em execução
+  shell      Abre um Bash no container da aplicação
+  exec       Executa um comando arbitrário: ./planifica exec <cmd> [args]
+  help       Mostra esta ajuda
+
+Antes de usar: configure o .env conforme o README e execute ./planifica dev.
+Após qualquer alteração PHP, execute ./planifica check e ./planifica test.
+Migrations são explícitas: ./planifica spark migrate --all (somente banco local).
+phpMyAdmin: http://localhost:8082 (login manual com o usuário do banco local).
+Não há artisan, tinker, APP_KEY, npm/npx ou PHP CS Fixer neste ambiente.
+AJUDA
+}
+
+executarCompose() {
+    docker compose --project-directory "$diretorioProjeto" \
+        --env-file "$diretorioProjeto/.env" --file "$diretorioProjeto/compose.yaml" "$@"
+}
+
+executarNoContainer() {
+    local usuario="$1"
+    shift
+    local opcoesTerminal=()
+
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        opcoesTerminal=(-T)
+    fi
+
+    executarCompose exec "${opcoesTerminal[@]}" --user "$usuario" --env HOME=/tmp app "$@"
+}
+
+corrigirEstilo() {
+    local codigoSaida=0
+
+    # O usuário do computador precisa manter a escrita nos arquivos do bind mount.
+    executarNoContainer "$(id -u):$(id -g)" vendor/bin/phpcbf "$@" || codigoSaida=$?
+
+    # PHPCBF retorna 1 quando corrigiu todos os problemas; 2 e 3 indicam falha.
+    if [[ "$codigoSaida" -ne 0 && "$codigoSaida" -ne 1 ]]; then
+        return "$codigoSaida"
+    fi
+}
+
+analisarCodigo() {
+    executarNoContainer www-data vendor/bin/phpstan analyse --no-progress --memory-limit=1G "$@"
+}
+
+validarServico() {
+    case "$1" in
+        app|banco|phpmyadmin) ;;
+        *) falhar 'Serviço inválido. Use app, banco ou phpmyadmin.' ;;
+    esac
+}
+
+comando="${1:-help}"
+servico=app
+if [[ "$#" -gt 0 ]]; then
+    shift
+fi
+
+case "$comando" in
+    help|-h|--help)
+        mostrarAjuda
+        exit 0
+        ;;
+    dev|stop|down|build|status|check|setup|shell|phpmyadmin)
+        [[ "$#" -eq 0 ]] || falhar "O comando $comando não aceita argumentos extras."
+        ;;
+    restart|logs)
+        if [[ "$#" -gt 0 && "$1" != -* ]]; then
+            servico="$1"
+            validarServico "$servico"
+            shift
+        fi
+        if [[ "$comando" == restart && "$#" -gt 0 ]]; then
+            falhar 'O comando restart não aceita argumentos extras após o serviço.'
+        fi
+        ;;
+    exec)
+        [[ "$#" -gt 0 && -n "$1" ]] || falhar 'Uso: ./planifica exec <cmd> [args]'
+        ;;
+    spark|composer|php|phpcs|phpcbf|phpstan|test)
+        ;;
+    *)
+        falhar "Comando desconhecido: $comando. Consulte ./planifica help."
+        ;;
+esac
+
+command -v docker >/dev/null 2>&1 || falhar 'Instale o Docker e o plugin Docker Compose v2.'
+docker compose version >/dev/null 2>&1 || falhar 'O plugin Docker Compose v2 não está disponível.'
+[[ -f "$diretorioProjeto/.env" ]] || falhar 'Crie o .env a partir do .env.example e configure as credenciais locais conforme o README.'
+
+cd -- "$diretorioProjeto"
+
+case "$comando" in
+    dev)
+        executarCompose up -d --build --wait
+        printf 'Aplicação: http://localhost:8080\nphpMyAdmin: http://localhost:8082\n'
+        ;;
+    stop|down)
+        executarCompose "$comando"
+        ;;
+    restart)
+        executarCompose restart "$servico"
+        ;;
+    build)
+        executarCompose build app
+        ;;
+    status)
+        executarCompose ps
+        ;;
+    logs)
+        executarCompose logs --follow "$@" "$servico"
+        ;;
+    phpmyadmin)
+        executarCompose up -d --wait phpmyadmin
+        printf 'phpMyAdmin: http://localhost:8082 (use o usuário e a senha do banco local).\n'
+        ;;
+    spark)
+        executarNoContainer www-data php spark "$@"
+        ;;
+    composer)
+        # O volume vendor é gerenciado por root, como na instalação via Compose.
+        executarNoContainer root composer "$@"
+        ;;
+    php)
+        executarNoContainer www-data php "$@"
+        ;;
+    phpcs)
+        executarNoContainer www-data vendor/bin/phpcs "$@"
+        ;;
+    phpcbf)
+        corrigirEstilo "$@"
+        ;;
+    phpstan)
+        analisarCodigo "$@"
+        ;;
+    test)
+        executarNoContainer www-data vendor/bin/phpunit "$@"
+        ;;
+    check)
+        corrigirEstilo
+        executarNoContainer www-data vendor/bin/phpcs
+        analisarCodigo
+        ;;
+    setup)
+        executarNoContainer root composer install --no-interaction --prefer-dist
+        ;;
+    shell)
+        executarNoContainer www-data bash
+        ;;
+    exec)
+        executarNoContainer www-data "$@"
+        ;;
+esac

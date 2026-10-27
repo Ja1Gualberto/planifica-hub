@@ -30,6 +30,17 @@ services:
       banco:
         condition: service_healthy
 
+  phpmyadmin:
+    image: phpmyadmin:5.2.3-apache
+    ports:
+      - "127.0.0.1:8082:80"
+    environment:
+      PMA_HOST: banco
+      PMA_PORT: "3306"
+    depends_on:
+      banco:
+        condition: service_healthy
+
   banco:
     image: mysql:8.4
     environment:
